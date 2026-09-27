@@ -28,8 +28,12 @@ h1,h2,h3 { color:#4DA3FF; }
 
 st.title("Ladywood Environmental Dashboard")
 st.markdown(
-    "<div class='info-card'><b>Fixed online version</b><br>"
-    "This version reads the brownfield and flooding data from files stored in your GitHub repository. </div>",
+    "<div class='info-card'><b>MIIN Group 37 FEBE1004A</b><br>"
+    "This Interactive Dashboard reads the brownfield, flooding, air quaility and rainfall data from files stored in your GitHub repository.
+    Members: 
+    Sanelisiwe Ntshangase 
+    Christopher Matsimela 
+    S'lindelokuhle Hlatshwayo </div>",
     unsafe_allow_html=True
 )
 
