@@ -209,4 +209,5 @@ else:
         {"Dataset":"Brownfield", "File":"data/brownfield.xlsx"},
         {"Dataset":"Air Quality", "File":"data/air_quality_2026.csv"},
         {"Dataset":"Surface-Water Flooding", "File":"data/surface_water_flooding.json"},
+        {"Dataset":"Rainfall","File":"data/rainfall.csv"},
     ]), use_container_width=True)
