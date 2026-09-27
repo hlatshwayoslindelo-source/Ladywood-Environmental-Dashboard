@@ -1,234 +1,209 @@
-import streamlit as st
-import pandas as pd
-import json
 from pathlib import Path
+import json
+import pandas as pd
+import streamlit as st
 
-st.set_page_config(
-    page_title="Ladywood Environmental Dashboard",
-    page_icon="🌍",
-    layout="wide"
+st.set_page_config(page_title="Ladywood Environmental Dashboard", layout="wide")
+
+st.markdown("""
+<style>
+.stApp { background-color:#050A14; color:#EAF2FF; }
+h1,h2,h3 { color:#4DA3FF; }
+[data-testid="stSidebar"] { background-color:#07111F; }
+[data-testid="stMetric"] {
+    background-color:#071827;
+    border:1px solid #145DA0;
+    border-radius:14px;
+    padding:15px;
+}
+.info-card {
+    background-color:#071827;
+    border:1px solid #145DA0;
+    border-radius:14px;
+    padding:18px;
+    margin-bottom:16px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("Ladywood Environmental Dashboard")
+st.markdown(
+    "<div class='info-card'><b>Fixed online version</b><br>"
+    "This version reads the brownfield and flooding data from files stored in your GitHub repository, "
+    "so Streamlit Cloud is not blocked by the Birmingham website.</div>",
+    unsafe_allow_html=True
 )
 
-DATA = Path(".")
+DATA = Path("data")
+BROWNFIELD_FILE = DATA / "brownfield.xlsx"
+AIR_FILE = DATA / "air_quality_2026.csv"
+FLOOD_FILE = DATA / "surface_water_flooding.json"
 
-st.title("🌍 Ladywood Environmental Dashboard")
-st.caption("Air Quality • Brownfield Sites • Surface Water Flooding • Rainfall")
+YEARS = [2026, 2025, 2024, 2023, 2022]
 
-section = st.sidebar.radio(
-    "Choose a section",
-    [
-        "Overview",
-        "Air Quality",
-        "Brownfield Sites",
-        "Surface Water Flooding",
-        "Rainfall"
-    ]
-)
-
-def find_file(possible_names):
-    for name in possible_names:
-        path = DATA / name
-        if path.exists():
-            return path
-    return None
-
-
-def safe_read_csv(path):
-    if path is None:
-        return pd.DataFrame()
-
-    for skip in range(0, 20):
-        try:
-            df = pd.read_csv(path, skiprows=skip)
-            if df.shape[1] > 1 and len(df) > 0:
-                df.columns = [str(c).strip() for c in df.columns]
-                return df
-        except Exception:
-            pass
-
-    return pd.DataFrame()
-
-
-def clean_numeric_columns(df):
-    for col in df.columns:
-        try:
-            df[col] = pd.to_numeric(df[col], errors="ignore")
-        except Exception:
-            pass
+def clean_cols(df):
+    df = df.copy()
+    df.columns = df.columns.astype(str).str.replace("\xa0", " ", regex=False).str.strip()
     return df
 
+def find_col(df, words):
+    for col in df.columns:
+        low = str(col).lower()
+        if any(w in low for w in words):
+            return col
+    return None
 
-def show_dataframe(df, title):
-    st.subheader(title)
+def search_rows(df, text):
+    if not text:
+        return df
+    mask = df.astype(str).apply(lambda r: r.str.contains(text, case=False, na=False).any(), axis=1)
+    return df[mask]
 
+def filter_ladywood(df):
     if df.empty:
-        st.error("No data could be loaded for this section.")
+        return df
+    mask = df.astype(str).apply(lambda r: r.str.contains("Ladywood", case=False, na=False).any(), axis=1)
+    result = df[mask]
+    return result if not result.empty else df
+
+def filter_year(df, year):
+    if df.empty:
+        return df
+    candidates = [c for c in df.columns if any(w in str(c).lower() for w in ["year","date","time","updated","added","permission"])]
+    for c in candidates:
+        dates = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
+        if dates.notna().sum() and (dates.dt.year == year).sum():
+            return df[dates.dt.year == year]
+        text = df[c].astype(str).str.contains(str(year), na=False)
+        if text.sum():
+            return df[text]
+    return df
+
+def map_if_possible(df):
+    lat = find_col(df, ["lat", "latitude"])
+    lon = find_col(df, ["lon", "lng", "longitude"])
+    if not lat or not lon:
+        st.info("No latitude/longitude columns detected for a map.")
         return
+    m = df.copy()
+    m[lat] = pd.to_numeric(m[lat], errors="coerce")
+    m[lon] = pd.to_numeric(m[lon], errors="coerce")
+    m = m.dropna(subset=[lat, lon])
+    if not m.empty:
+        st.map(m.rename(columns={lat:"lat", lon:"lon"})[["lat","lon"]])
+    else:
+        st.info("Coordinate columns were found, but no valid points could be mapped.")
 
-    st.write(f"Rows loaded: **{len(df)}**")
-    st.dataframe(df, use_container_width=True)
+@st.cache_data(ttl=3600)
+def load_brownfield():
+    return clean_cols(pd.read_excel(BROWNFIELD_FILE))
 
+@st.cache_data(ttl=3600)
+def load_air():
+    try:
+        return clean_cols(pd.read_csv(AIR_FILE, skiprows=4))
+    except Exception:
+        return clean_cols(pd.read_csv(AIR_FILE))
 
-brownfield_path = find_file([
-    "brownfield.xlsx",
-    "brownfield.csv",
-    "Brownfield.xlsx",
-    "Brownfield.csv"
-])
+@st.cache_data(ttl=3600)
+def load_flood():
+    with open(FLOOD_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-air_path = find_file([
-    "air_quality_2026.csv",
-    "air_quality.csv",
-    "Air_Quality_2026.csv",
-    "Air Quality 2026.csv"
-])
+def first_coord(geom):
+    if not geom:
+        return None
+    cur = geom.get("coordinates")
+    try:
+        while isinstance(cur, list):
+            if len(cur) >= 2 and isinstance(cur[0], (int,float)) and isinstance(cur[1], (int,float)):
+                return cur[1], cur[0]
+            cur = cur[0]
+    except Exception:
+        return None
+    return None
 
-flood_path = find_file([
-    "surface_water_flooding.json",
-    "surface_water_flooding.geojson",
-    "flooding.json",
-    "Surface_Water_Flooding.json"
-])
+def flood_table(js):
+    rows = []
+    for i, feat in enumerate(js.get("features", []), start=1):
+        row = {"feature_number": i, "feature_id": feat.get("id", "")}
+        row.update(feat.get("properties", {}))
+        pt = first_coord(feat.get("geometry", {}))
+        if pt:
+            row["lat"], row["lon"] = pt
+        rows.append(row)
+    return pd.DataFrame(rows)
 
-rain_path = find_file([
-    "rainfall.csv",
-    "ladywood_rainfall_2025.csv",
-    "Ladywood_Rainfall_2025.csv",
-    "rain.csv"
-])
+section = st.sidebar.radio("Section", ["Overview", "Brownfield", "Air Quality", "Surface-Water Flooding", "Data Sources"])
+year = st.sidebar.selectbox("Year", YEARS)
 
+errors = []
+try:
+    brown_all = load_brownfield()
+    brown_lady = filter_ladywood(brown_all)
+    brown_year = filter_year(brown_lady, year)
+except Exception as e:
+    brown_all = brown_lady = brown_year = pd.DataFrame()
+    errors.append(("Brownfield", e))
+
+try:
+    air = load_air()
+    air_year = filter_year(air, year)
+except Exception as e:
+    air = air_year = pd.DataFrame()
+    errors.append(("Air Quality", e))
+
+try:
+    flood = flood_table(load_flood())
+    flood_year = filter_year(flood, year)
+except Exception as e:
+    flood = flood_year = pd.DataFrame()
+    errors.append(("Surface-Water Flooding", e))
 
 if section == "Overview":
     st.header("Overview")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Selected year", year)
+    c2.metric("Ladywood brownfield records", len(brown_year))
+    c3.metric("Air-quality records", len(air_year if not air_year.empty else air))
+    c4.metric("Flooding features", len(flood_year if not flood_year.empty else flood))
+    for name, e in errors:
+        st.error(f"{name} could not be loaded.")
+        st.exception(e)
 
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric("Air Quality File", "Found" if air_path else "Missing")
-
-    with col2:
-        st.metric("Brownfield File", "Found" if brownfield_path else "Missing")
-
-    with col3:
-        st.metric("Flooding File", "Found" if flood_path else "Missing")
-
-    with col4:
-        st.metric("Rainfall File", "Found" if rain_path else "Missing")
-
-    st.info(
-        "Use the sidebar to open each dataset. "
-        "If a section shows missing data, check that the file is uploaded to the main GitHub repo page."
-    )
-
+elif section == "Brownfield":
+    st.header("Brownfield")
+    q = st.text_input("Search brownfield records", "")
+    df = search_rows(brown_year, q)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("All Birmingham records", len(brown_all))
+    c2.metric("Ladywood records", len(brown_lady))
+    c3.metric("Shown", len(df))
+    st.dataframe(df, use_container_width=True)
+    map_if_possible(df)
 
 elif section == "Air Quality":
     st.header("Air Quality")
+    q = st.text_input("Search air-quality records", "")
+    df = search_rows(air_year if not air_year.empty else air, q)
+    st.metric("Records shown", len(df))
+    nums = df.select_dtypes(include="number").columns.tolist()
+    if nums:
+        st.line_chart(df[nums[:1]])
+    st.dataframe(df, use_container_width=True)
 
-    air_df = safe_read_csv(air_path)
-    air_df = clean_numeric_columns(air_df)
+elif section == "Surface-Water Flooding":
+    st.header("Surface-Water Flooding")
+    q = st.text_input("Search flooding records", "")
+    df = search_rows(flood_year if not flood_year.empty else flood, q)
+    st.metric("Features shown", len(df))
+    st.dataframe(df, use_container_width=True)
+    map_if_possible(df)
 
-    if air_df.empty:
-        st.error("Air quality data is missing or could not be read.")
-        st.write("Expected file name: `air_quality_2026.csv`")
-    else:
-        show_dataframe(air_df, "Air Quality Data")
-
-        numeric_cols = air_df.select_dtypes(include="number").columns.tolist()
-
-        if numeric_cols:
-            selected_col = st.selectbox("Choose a numeric column to chart", numeric_cols)
-            st.line_chart(air_df[selected_col])
-        else:
-            st.warning("No numeric columns were found to chart.")
-
-
-elif section == "Brownfield Sites":
-    st.header("Brownfield Sites")
-
-    if brownfield_path is None:
-        st.error("Brownfield file is missing.")
-        st.write("Expected file name: `brownfield.xlsx`")
-    else:
-        try:
-            if brownfield_path.suffix.lower() == ".xlsx":
-                brown_df = pd.read_excel(brownfield_path)
-            else:
-                brown_df = safe_read_csv(brownfield_path)
-
-            brown_df.columns = [str(c).strip() for c in brown_df.columns]
-            show_dataframe(brown_df, "Brownfield Sites Data")
-
-            st.write("Column names found:")
-            st.code(", ".join(brown_df.columns))
-
-        except Exception as e:
-            st.error("Brownfield file could not be read.")
-            st.exception(e)
-
-
-elif section == "Surface Water Flooding":
-    st.header("Surface Water Flooding")
-
-    if flood_path is None:
-        st.error("Surface water flooding file is missing.")
-        st.write("Expected file name: `surface_water_flooding.json`")
-    else:
-        try:
-            with open(flood_path, "r", encoding="utf-8") as f:
-                flood_data = json.load(f)
-
-            st.success("Surface water flooding file loaded successfully.")
-
-            if isinstance(flood_data, dict):
-                st.write("Top-level keys:")
-                st.code(", ".join(flood_data.keys()))
-
-                if "features" in flood_data:
-                    st.write(f"Number of flood features: **{len(flood_data['features'])}**")
-
-                    features = flood_data["features"]
-                    rows = []
-
-                    for feature in features[:500]:
-                        props = feature.get("properties", {})
-                        rows.append(props)
-
-                    flood_df = pd.DataFrame(rows)
-
-                    if not flood_df.empty:
-                        st.dataframe(flood_df, use_container_width=True)
-                    else:
-                        st.warning("The flood file loaded, but no table properties were found.")
-                else:
-                    st.json(flood_data)
-            else:
-                st.json(flood_data)
-
-        except Exception as e:
-            st.error("Surface water flooding file could not be read.")
-            st.exception(e)
-
-
-elif section == "Rainfall":
-    st.header("Rainfall")
-
-    rain_df = safe_read_csv(rain_path)
-    rain_df = clean_numeric_columns(rain_df)
-
-    if rain_df.empty:
-        st.error("Rainfall data is missing or could not be read.")
-        st.write("Expected file name: `rainfall.csv`")
-    else:
-        show_dataframe(rain_df, "Rainfall Data")
-
-        numeric_cols = rain_df.select_dtypes(include="number").columns.tolist()
-
-        if numeric_cols:
-            selected_col = st.selectbox("Choose a rainfall numeric column to chart", numeric_cols)
-            st.line_chart(rain_df[selected_col])
-        else:
-            st.warning("No numeric rainfall columns were found to chart.")
-
-
-st.markdown("---")
-st.caption("Ladywood Environmental Dashboard")
+else:
+    st.header("Data Sources")
+    st.dataframe(pd.DataFrame([
+        {"Dataset":"Brownfield", "File":"data/brownfield.xlsx"},
+        {"Dataset":"Air Quality", "File":"data/air_quality_2026.csv"},
+        {"Dataset":"Surface-Water Flooding", "File":"data/surface_water_flooding.json"},
+    ]), use_container_width=True)
