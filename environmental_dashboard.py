@@ -33,7 +33,7 @@ st.markdown(
     "Members: 
     Sanelisiwe Ntshangase 
     Christopher Matsimela 
-    S'lindelokuhle Hlatshwayo </div>",
+    Slindelokuhle Hlatshwayo </div>",
     unsafe_allow_html=True
 )
 
