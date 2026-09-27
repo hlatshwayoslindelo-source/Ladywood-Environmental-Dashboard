@@ -34,7 +34,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-DATA = Path("data")
+DATA = Path(".")
 BROWNFIELD_FILE = DATA / "brownfield.xlsx"
 AIR_FILE = DATA / "air_quality_2026.csv"
 FLOOD_FILE = DATA / "surface_water_flooding.json"
