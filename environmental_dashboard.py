@@ -28,16 +28,17 @@ h1,h2,h3 { color:#4DA3FF; }
 
 st.title("Ladywood Environmental Dashboard")
 st.markdown(
-    "<div class='info-card'><b>Fixed online version</b><br>"
-    "This version reads the brownfield and flooding data from files stored in your GitHub repository, "
-    "so Streamlit Cloud is not blocked by the Birmingham website.</div>",
+    "<div class='info-card'><b>Final online version</b><br>"
+    "This version reads brownfield, air quality, surface-water flooding, and rainfall from files stored in your GitHub repository.</div>",
     unsafe_allow_html=True
 )
 
+# Files are stored on the main GitHub repository page.
 DATA = Path(".")
 BROWNFIELD_FILE = DATA / "brownfield.xlsx"
 AIR_FILE = DATA / "air_quality_2026.csv"
 FLOOD_FILE = DATA / "surface_water_flooding.json"
+RAINFALL_FILE = DATA / "rainfall.csv"
 
 YEARS = [2026, 2025, 2024, 2023, 2022]
 
@@ -45,6 +46,17 @@ def clean_cols(df):
     df = df.copy()
     df.columns = df.columns.astype(str).str.replace("\xa0", " ", regex=False).str.strip()
     return df
+
+def read_csv_flexible(path):
+    # Try normal CSV first, then common metadata-row skips.
+    for skip in [0, 1, 2, 3, 4, 5, 6]:
+        try:
+            df = pd.read_csv(path, skiprows=skip)
+            if len(df.columns) > 1:
+                return clean_cols(df)
+        except Exception:
+            pass
+    return clean_cols(pd.read_csv(path))
 
 def find_col(df, words):
     for col in df.columns:
@@ -54,7 +66,7 @@ def find_col(df, words):
     return None
 
 def search_rows(df, text):
-    if not text:
+    if df.empty or not text:
         return df
     mask = df.astype(str).apply(lambda r: r.str.contains(text, case=False, na=False).any(), axis=1)
     return df[mask]
@@ -69,7 +81,7 @@ def filter_ladywood(df):
 def filter_year(df, year):
     if df.empty:
         return df
-    candidates = [c for c in df.columns if any(w in str(c).lower() for w in ["year","date","time","updated","added","permission"])]
+    candidates = [c for c in df.columns if any(w in str(c).lower() for w in ["year","date","time","updated","added","permission","month"])]
     for c in candidates:
         dates = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
         if dates.notna().sum() and (dates.dt.year == year).sum():
@@ -78,6 +90,12 @@ def filter_year(df, year):
         if text.sum():
             return df[text]
     return df
+
+def numeric_columns(df):
+    converted = df.copy()
+    for col in converted.columns:
+        converted[col] = pd.to_numeric(converted[col], errors="coerce")
+    return [c for c in converted.columns if converted[c].notna().sum() > 0]
 
 def map_if_possible(df):
     lat = find_col(df, ["lat", "latitude"])
@@ -100,10 +118,11 @@ def load_brownfield():
 
 @st.cache_data(ttl=3600)
 def load_air():
-    try:
-        return clean_cols(pd.read_csv(AIR_FILE, skiprows=4))
-    except Exception:
-        return clean_cols(pd.read_csv(AIR_FILE))
+    return read_csv_flexible(AIR_FILE)
+
+@st.cache_data(ttl=3600)
+def load_rainfall():
+    return read_csv_flexible(RAINFALL_FILE)
 
 @st.cache_data(ttl=3600)
 def load_flood():
@@ -134,7 +153,10 @@ def flood_table(js):
         rows.append(row)
     return pd.DataFrame(rows)
 
-section = st.sidebar.radio("Section", ["Overview", "Brownfield", "Air Quality", "Surface-Water Flooding", "Data Sources"])
+section = st.sidebar.radio(
+    "Section",
+    ["Overview", "Brownfield", "Air Quality", "Surface-Water Flooding", "Rainfall", "Data Sources"]
+)
 year = st.sidebar.selectbox("Year", YEARS)
 
 errors = []
@@ -160,13 +182,27 @@ except Exception as e:
     flood = flood_year = pd.DataFrame()
     errors.append(("Surface-Water Flooding", e))
 
+try:
+    rainfall = load_rainfall()
+    rainfall_year = filter_year(rainfall, year)
+except Exception as e:
+    rainfall = rainfall_year = pd.DataFrame()
+    errors.append(("Rainfall", e))
+
 if section == "Overview":
     st.header("Overview")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Selected year", year)
-    c2.metric("Ladywood brownfield records", len(brown_year))
+    c2.metric("Brownfield records", len(brown_year))
     c3.metric("Air-quality records", len(air_year if not air_year.empty else air))
     c4.metric("Flooding features", len(flood_year if not flood_year.empty else flood))
+    c5.metric("Rainfall records", len(rainfall_year if not rainfall_year.empty else rainfall))
+
+    st.markdown(
+        "<div class='info-card'>Use the sidebar to switch between Brownfield, Air Quality, Surface-Water Flooding, and Rainfall.</div>",
+        unsafe_allow_html=True
+    )
+
     for name, e in errors:
         st.error(f"{name} could not be loaded.")
         st.exception(e)
@@ -176,7 +212,7 @@ elif section == "Brownfield":
     q = st.text_input("Search brownfield records", "")
     df = search_rows(brown_year, q)
     c1, c2, c3 = st.columns(3)
-    c1.metric("All Birmingham records", len(brown_all))
+    c1.metric("All records", len(brown_all))
     c2.metric("Ladywood records", len(brown_lady))
     c3.metric("Shown", len(df))
     st.dataframe(df, use_container_width=True)
@@ -187,9 +223,12 @@ elif section == "Air Quality":
     q = st.text_input("Search air-quality records", "")
     df = search_rows(air_year if not air_year.empty else air, q)
     st.metric("Records shown", len(df))
-    nums = df.select_dtypes(include="number").columns.tolist()
+    nums = numeric_columns(df)
     if nums:
-        st.line_chart(df[nums[:1]])
+        chosen = st.selectbox("Choose air-quality chart field", nums)
+        chart_df = df.copy()
+        chart_df[chosen] = pd.to_numeric(chart_df[chosen], errors="coerce")
+        st.line_chart(chart_df[[chosen]].dropna())
     st.dataframe(df, use_container_width=True)
 
 elif section == "Surface-Water Flooding":
@@ -200,10 +239,35 @@ elif section == "Surface-Water Flooding":
     st.dataframe(df, use_container_width=True)
     map_if_possible(df)
 
+elif section == "Rainfall":
+    st.header("Rainfall")
+    q = st.text_input("Search rainfall records", "")
+    df = search_rows(rainfall_year if not rainfall_year.empty else rainfall, q)
+    st.metric("Rainfall records shown", len(df))
+
+    nums = numeric_columns(df)
+    if nums:
+        chosen = st.selectbox("Choose rainfall chart field", nums)
+        chart_df = df.copy()
+        chart_df[chosen] = pd.to_numeric(chart_df[chosen], errors="coerce")
+
+        date_col = find_col(chart_df, ["date", "time", "month"])
+        if date_col:
+            dates = pd.to_datetime(chart_df[date_col], errors="coerce", dayfirst=True)
+            if dates.notna().sum() > 0:
+                chart_df = chart_df.assign(_date=dates).dropna(subset=["_date"]).sort_values("_date").set_index("_date")
+
+        st.line_chart(chart_df[[chosen]].dropna())
+    else:
+        st.info("No numeric rainfall column was detected for a chart.")
+
+    st.dataframe(df, use_container_width=True)
+
 else:
     st.header("Data Sources")
     st.dataframe(pd.DataFrame([
-        {"Dataset":"Brownfield", "File":"data/brownfield.xlsx"},
-        {"Dataset":"Air Quality", "File":"data/air_quality_2026.csv"},
-        {"Dataset":"Surface-Water Flooding", "File":"data/surface_water_flooding.json"},
+        {"Dataset":"Brownfield", "File":"brownfield.xlsx"},
+        {"Dataset":"Air Quality", "File":"air_quality_2026.csv"},
+        {"Dataset":"Surface-Water Flooding", "File":"surface_water_flooding.json"},
+        {"Dataset":"Rainfall", "File":"rainfall.csv"},
     ]), use_container_width=True)
