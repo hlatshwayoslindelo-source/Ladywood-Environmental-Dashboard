@@ -30,10 +30,10 @@ st.title("Ladywood Environmental Dashboard")
 st.markdown(
     "<div class='info-card'><b>MIIN Group 37 FEBE1004A</b><br>"
     "This Interactive Dashboard reads the brownfield, flooding, air quaility and rainfall data from files stored in your GitHub repository."
-    "Members: 
+    """Members: 
     Sanelisiwe Ntshangase 
     Christopher Matsimela 
-    Slindelokuhle Hlatshwayo </div>",
+    Slindelokuhle Hlatshwayo </div>""",
     unsafe_allow_html=True
 )
 
